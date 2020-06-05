@@ -1,3 +1,6 @@
+/*
+ * Written in the end of April 2020 by Niklas Ekström.
+ */
 #ifndef SPI_H_
 #define SPI_H_
 

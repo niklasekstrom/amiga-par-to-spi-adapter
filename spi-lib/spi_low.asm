@@ -1,3 +1,5 @@
+; Written in the end of April 2020 by Niklas Ekström.
+
         XDEF        _spi_read_fast
         XDEF        _spi_write_fast
         CODE

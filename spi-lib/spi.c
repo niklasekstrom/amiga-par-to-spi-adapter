@@ -1,3 +1,6 @@
+/*
+ * Written in the end of April 2020 by Niklas Ekström.
+ */
 #include <exec/types.h>
 #include <proto/exec.h>
 
