@@ -1,38 +1,39 @@
 /*
- *  SPI SD device driver for K1208/Amiga 1200
+ * Written by Niklas Ekström in July 2021.
  *
- *  Copyright (C) 2018 Mike Stirling
- *
- *  This program is free software: you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation, either version 3 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
-/*
- * Parts of this file were changed in order for it to compile with VBCC.
- * The procedures device_get_geometry() and begin_io() are intact.
+ * Previous version of this file (device.c) used code written by
+ * Mike Sterling in 2018 for the SPI SD device driver for K1208/Amiga 1200.
+ * 
+ * In order to handle sd card removal this file was rewritten almost entirely.
  */
 
 #include <exec/types.h>
-#include <exec/execbase.h>
 #include <exec/devices.h>
 #include <exec/errors.h>
+#include <exec/execbase.h>
+#include <exec/interrupts.h>
 #include <exec/ports.h>
+#include <exec/tasks.h>
 #include <libraries/dos.h>
+#include <devices/timer.h>
 #include <devices/trackdisk.h>
 #include <proto/exec.h>
 
 #include "sd.h"
 #include "spi.h"
+
+#define TASK_STACK_SIZE 2048
+#define TASK_PRIORITY 10
+
+#define DEBOUNCE_TIMEOUT_US 100000
+
+#define SIGB_CARD_CHANGE 30
+#define SIGB_OP_REQUEST 29
+#define SIGB_TIMER 28
+
+#define SIGF_CARD_CHANGE (1 << SIGB_CARD_CHANGE)
+#define SIGF_OP_REQUEST (1 << SIGB_OP_REQUEST)
+#define SIGF_OP_TIMER (1 << SIGB_TIMER)
 
 #ifndef TD_GETGEOMETRY
 // Needed to compile with AmigaOS 1.3 headers.
@@ -40,214 +41,343 @@
 
 struct DriveGeometry
 {
-	ULONG	dg_SectorSize;
-	ULONG	dg_TotalSectors;
-	ULONG	dg_Cylinders;
-	ULONG	dg_CylSectors;
-	ULONG	dg_Heads;
-	ULONG	dg_TrackSectors;
-	ULONG	dg_BufMemType;
-	UBYTE	dg_DeviceType;
-	UBYTE	dg_Flags;
-	UWORD	dg_Reserved;
+    ULONG	dg_SectorSize;
+    ULONG	dg_TotalSectors;
+    ULONG	dg_Cylinders;
+    ULONG	dg_CylSectors;
+    ULONG	dg_Heads;
+    ULONG	dg_TrackSectors;
+    ULONG	dg_BufMemType;
+    UBYTE	dg_DeviceType;
+    UBYTE	dg_Flags;
+    UWORD	dg_Reserved;
 };
 #endif
 
-char device_name[] = "spisd.device";
-char id_string[] = "spisd 0.3 (3 May 2020)";
-
 struct ExecBase *SysBase;
-BPTR saved_seg_list;
+static BPTR saved_seg_list;
+static struct timerequest tr;
+static struct Task *task;
+static struct MsgPort mp;
+static struct MsgPort timer_mp;
+static volatile BOOL card_present;
+static volatile BOOL card_opened;
+static volatile ULONG card_change_num;
 
-BOOL is_open;
+static struct Interrupt *remove_int;
+static struct IOStdReq *change_int;
 
-static struct Library *init_device(__reg("a6") struct ExecBase *sys_base, __reg("a0") BPTR seg_list, __reg("d0") struct Library *dev)
+char device_name[] = "spisd.device";
+char id_string[] = "spisd 2.0 (19 July 2021)";
+
+static uint32_t device_get_geometry(struct IOStdReq *ior)
 {
-	SysBase = *(struct ExecBase **)4;
-	saved_seg_list = seg_list;
+    struct DriveGeometry *geom = (struct DriveGeometry*)ior->io_Data;
+    const sd_card_info_t *ci = sd_get_card_info();
 
-	dev->lib_Node.ln_Type = NT_DEVICE;
-	dev->lib_Node.ln_Name = device_name;
-	dev->lib_Flags = LIBF_SUMUSED | LIBF_CHANGED;
-	dev->lib_Version = 0;
-	dev->lib_Revision = 2;
-	dev->lib_IdString = (APTR)id_string;
+    if (ci->type == sdCardType_None)
+        return TDERR_DiskChanged;
 
-	is_open = FALSE;
-
-	return dev;
+    geom->dg_SectorSize = 1 << ci->block_size;
+    geom->dg_TotalSectors = ci->total_sectors; //ci->capacity >> ci->block_size;
+    geom->dg_Cylinders = geom->dg_TotalSectors;
+    geom->dg_CylSectors = 1;
+    geom->dg_Heads = 1;
+    geom->dg_TrackSectors = 1;
+    geom->dg_BufMemType = MEMF_PUBLIC;
+    geom->dg_DeviceType = 0; //DG_DIRECT_ACCESS;
+    geom->dg_Flags = 1; //DGF_REMOVABLE;
+    return 0;
 }
 
-static BPTR expunge(__reg("a6") struct Library *dev)
+static void handle_changed()
 {
-	if (dev->lib_OpenCnt != 0)
-	{
-		dev->lib_Flags |= LIBF_DELEXP;
-		return 0;
-	}
+    // Wait to debounce the card detect switch.
+    tr.tr_node.io_Command = TR_ADDREQUEST;
+    tr.tr_time.tv_secs = 0;
+    tr.tr_time.tv_micro = DEBOUNCE_TIMEOUT_US;
+    DoIO((struct IORequest *)&tr);
 
-	spi_shutdown();
+    int res = spi_get_card_present();
 
-	BPTR seg_list = saved_seg_list;
-	Remove(&dev->lib_Node);
-	FreeMem((char *)dev - dev->lib_NegSize, dev->lib_NegSize + dev->lib_PosSize);
-	return seg_list;
+    if (res == 1 && sd_open() == 0)
+        card_opened = TRUE;
+    else
+        card_opened = FALSE;
+
+    Forbid();
+    card_present = res == 1;
+    card_change_num++;
+    Permit();
+
+    if (remove_int)
+        Cause(remove_int);
+
+    if (change_int)
+        Cause((struct Interrupt *)change_int->io_Data);
 }
 
-static void open(__reg("a6") struct Library *dev, __reg("a1") struct IORequest *ior, __reg("d0") ULONG unitnum, __reg("d1") ULONG flags)
+static void process_request(struct IOStdReq *ior)
 {
-	ior->io_Error = IOERR_OPENFAIL;
-	ior->io_Message.mn_Node.ln_Type = NT_REPLYMSG;
+    if (!card_present)
+        ior->io_Error = TDERR_DiskChanged;
+    else if (!card_opened)
+        ior->io_Error = TDERR_NotSpecified;
+    else
+    {
+        switch (ior->io_Command)
+        {
+        case TD_GETGEOMETRY:
+            ior->io_Error = device_get_geometry(ior);
+            break;
 
-	if (unitnum != 0)
-		return;
+        case TD_FORMAT:
+        case CMD_WRITE:
+            if (sd_write((uint8_t *)ior->io_Data, ior->io_Offset >> SD_SECTOR_SHIFT, ior->io_Length >> SD_SECTOR_SHIFT) == 0)
+                ior->io_Actual = ior->io_Length;
+            else
+                ior->io_Error = TDERR_NotSpecified;
+            break;
 
-	if (!is_open)
-	{
-		spi_initialize();
-		if (sd_open() != 0)
-			return;
-		is_open = TRUE;
-	}
+        case CMD_READ:
+            if (sd_read((uint8_t *)ior->io_Data, ior->io_Offset >> SD_SECTOR_SHIFT, ior->io_Length >> SD_SECTOR_SHIFT) == 0)
+                ior->io_Actual = ior->io_Length;
+            else
+                ior->io_Error = TDERR_NotSpecified;
+            break;
+        }
+    }
 
-	dev->lib_OpenCnt++;
-	ior->io_Error = 0;
+    ReplyMsg(&ior->io_Message);
 }
 
-static BPTR close(__reg("a6") struct Library *dev, __reg("a1") struct IORequest *ior)
+static void task_run()
 {
-	ior->io_Device = NULL;
-	ior->io_Unit = NULL;
+    if (card_present && sd_open() == 0)
+        card_opened = TRUE;
 
-	dev->lib_OpenCnt--;
+    while (1)
+    {
+        ULONG sigs = Wait(SIGF_CARD_CHANGE | SIGF_OP_REQUEST);
 
-	if (dev->lib_OpenCnt == 0 && (dev->lib_Flags & LIBF_DELEXP))
-		return expunge(dev);
+        if (sigs & SIGF_CARD_CHANGE)
+            handle_changed();
 
-	return 0;
+        if (sigs & SIGF_OP_REQUEST)
+        {
+            BOOL first = TRUE;
+
+            struct IOStdReq *ior;
+            while ((ior = (struct IOStdReq *)GetMsg(&mp)))
+            {
+                if (!first && (SetSignal(0, SIGF_CARD_CHANGE) & SIGF_CARD_CHANGE))
+                    handle_changed();
+
+                process_request(ior);
+                first = FALSE;
+            }
+        }
+    }
 }
 
-static uint32_t device_get_geometry(struct IOStdReq *iostd)
+static void change_isr()
 {
-	struct DriveGeometry *geom = (struct DriveGeometry*)iostd->io_Data;
-	const sd_card_info_t *ci = sd_get_card_info();
-
-	if (ci->type != sdCardType_None) {
-		geom->dg_SectorSize = 1 << ci->block_size;
-		geom->dg_TotalSectors = ci->total_sectors; //ci->capacity >> ci->block_size;
-		geom->dg_Cylinders = geom->dg_TotalSectors;
-		geom->dg_CylSectors = 1;
-		geom->dg_Heads = 1;
-		geom->dg_TrackSectors = 1;
-		geom->dg_BufMemType = MEMF_PUBLIC;
-		geom->dg_DeviceType = 0; //DG_DIRECT_ACCESS;
-		geom->dg_Flags = 1; //DGF_REMOVABLE;
-		return 0;
-	} else {
-		return TDERR_DiskChanged;
-	}
+    Signal(task, SIGF_CARD_CHANGE);
 }
 
-static void begin_io(__reg("a6") struct Library *dev, __reg("a1") struct IORequest *ioreq)
+static void begin_io(__reg("a6") struct Library *dev, __reg("a1") struct IOStdReq *ior)
 {
-	struct IOStdReq *iostd = (struct IOStdReq*)ioreq;
+    if (!ior)
+        return;
 
-	if (ioreq == NULL) {
-		return;
-	}
+    ior->io_Error = 0;
+    ior->io_Actual = 0;
 
-	iostd->io_Error = 0;
+    switch (ior->io_Command)
+    {
+    case CMD_RESET:
+    case CMD_CLEAR:
+    case CMD_UPDATE:
+    case TD_MOTOR:
+    case TD_PROTSTATUS:
+        break;
 
-	switch (iostd->io_Command) {
-	case CMD_RESET:
-	case CMD_CLEAR:
-	case CMD_UPDATE:
-	case TD_MOTOR:
-	case TD_REMOVE:
-		/* NULL commands */
-		iostd->io_Actual = 0;
-		break;
-	case TD_PROTSTATUS:
-		/* Should return a non-zero value if the card is write protected */
-		iostd->io_Actual = 0;
-		break;
-	case TD_CHANGESTATE:
-		/* Should return a non-zero value if the card is invalid or not inserted */
-		iostd->io_Actual = 0;
-		break;
-	case TD_CHANGENUM:
-		/* This should increment each time a disk is inserted */
-		iostd->io_Actual = 1;
-		break;
-	case TD_GETDRIVETYPE:
-		iostd->io_Actual = 0; //DG_DIRECT_ACCESS;
-		break;
-	case TD_GETGEOMETRY:
-		iostd->io_Actual = 0;
-		iostd->io_Error = device_get_geometry(iostd);
-		break;
-#if 0
-	case HD_SCSI_CMD:
-		break;
-	case NSCMD_DEVICEQUERY:
-		break;
-	case NSCMD_TD_READ64:
-		break;
-	case NSCMD_WRITE64:
-		break;
-#endif
+    case TD_CHANGESTATE:
+        ior->io_Actual = card_present ? 0 : 1;
+        break;
 
-	case TD_FORMAT:
-	case CMD_WRITE:
-		/* FIXME: Should be deferred to task but this did not work reliably - investigate */
-		if (sd_write((uint8_t *)iostd->io_Data, iostd->io_Offset >> SD_SECTOR_SHIFT, iostd->io_Length >> SD_SECTOR_SHIFT) == 0) {
-			iostd->io_Actual = iostd->io_Length;
-			iostd->io_Error = 0;
-		} else {
-			iostd->io_Actual = 0;
-			iostd->io_Error = TDERR_NotSpecified;
-		}
-		break;
-	case CMD_READ:
-		if (sd_read((uint8_t *)iostd->io_Data, iostd->io_Offset >> SD_SECTOR_SHIFT, iostd->io_Length >> SD_SECTOR_SHIFT) == 0) {
-			iostd->io_Actual = iostd->io_Length;
-			iostd->io_Error = 0;
-		} else {
-			iostd->io_Actual = 0;
-			iostd->io_Error = TDERR_NotSpecified;
-		}
-		break;
-	default:
-		iostd->io_Error = IOERR_NOCMD;
-	}
+    case TD_CHANGENUM:
+        ior->io_Actual = card_change_num;
+        break;
 
-	if (iostd && !(iostd->io_Flags & IOF_QUICK)) {
-		/* Reply to message now unless it was deferred to the task or is IOF_QUICK */
-		ReplyMsg(&iostd->io_Message);
-	}
+    case TD_GETDRIVETYPE:
+        ior->io_Actual = 0; //DG_DIRECT_ACCESS;
+        break;
+
+    case TD_REMOVE:
+        remove_int = (struct Interrupt *)ior->io_Data;
+        break;
+
+    case TD_ADDCHANGEINT:
+        if (change_int)
+            ior->io_Error = IOERR_ABORTED;
+        else
+        {
+            change_int = ior;
+            ior->io_Flags &= ~IOF_QUICK;
+            ior = NULL;
+        }
+        break;
+
+    case TD_REMCHANGEINT:
+        if (change_int == ior)
+            change_int = NULL;
+        break;
+
+    case TD_GETGEOMETRY:
+    case TD_FORMAT:
+    case CMD_WRITE:
+    case CMD_READ:
+        PutMsg(&mp, (struct Message *)&ior->io_Message);
+        ior->io_Flags &= ~IOF_QUICK;
+        ior = NULL;
+        break;
+
+    default:
+        ior->io_Error = IOERR_NOCMD;
+    }
+
+    if (ior && !(ior->io_Flags & IOF_QUICK))
+        ReplyMsg(&ior->io_Message);
 }
 
 static ULONG abort_io(__reg("a6") struct Library *dev, __reg("a1") struct IORequest *ior)
 {
-	// There is no asynchronous processing of requests so this is always a no-op.
-	return IOERR_NOCMD;
+    return IOERR_NOCMD;
+}
+
+static struct Library *init_device(__reg("a6") struct ExecBase *sys_base, __reg("a0") BPTR seg_list, __reg("d0") struct Library *dev)
+{
+    SysBase = *(struct ExecBase **)4;
+    saved_seg_list = seg_list;
+
+    dev->lib_Node.ln_Type = NT_DEVICE;
+    dev->lib_Node.ln_Name = device_name;
+    dev->lib_Flags = LIBF_SUMUSED | LIBF_CHANGED;
+    dev->lib_Version = 2;
+    dev->lib_Revision = 0;
+    dev->lib_IdString = (APTR)id_string;
+
+    Forbid();
+
+    tr.tr_node.io_Message.mn_Node.ln_Type = NT_REPLYMSG;
+    tr.tr_node.io_Message.mn_ReplyPort = &timer_mp;
+    tr.tr_node.io_Message.mn_Length = sizeof(tr);
+
+    if (OpenDevice(TIMERNAME, UNIT_VBLANK, (struct IORequest *)&tr, 0))
+        goto fail1;
+
+    task = CreateTask(device_name, TASK_PRIORITY, (char *)&task_run, TASK_STACK_SIZE);
+    if (!task)
+        goto fail2;
+
+    int res = spi_initialize(&change_isr);
+    if (res < 0)
+        goto fail3;
+
+    card_present = res == 1;
+
+    mp.mp_Node.ln_Type = NT_MSGPORT;
+    mp.mp_Flags = PA_SIGNAL;
+    mp.mp_SigBit = SIGB_OP_REQUEST;
+    mp.mp_SigTask = task;
+    NewList(&mp.mp_MsgList);
+
+    timer_mp.mp_Node.ln_Type = NT_MSGPORT;
+    timer_mp.mp_Flags = PA_SIGNAL;
+    timer_mp.mp_SigBit = SIGB_TIMER;
+    timer_mp.mp_SigTask = task;
+    NewList(&timer_mp.mp_MsgList);
+
+    Permit();
+    return dev;
+
+fail3:
+    DeleteTask(task);
+
+fail2:
+    CloseDevice((struct IORequest *)&tr);
+
+fail1:
+    Permit();
+    FreeMem((char *)dev - dev->lib_NegSize, dev->lib_NegSize + dev->lib_PosSize);
+    return NULL;
+}
+
+static BPTR expunge(__reg("a6") struct Library *dev)
+{
+    if (dev->lib_OpenCnt != 0)
+    {
+        dev->lib_Flags |= LIBF_DELEXP;
+        return 0;
+    }
+
+    // This could be improved on.
+    // There is a risk that the task has an outstanding debounce timer,
+    // and deleting the task at that point will probably cause a crash.
+
+    spi_shutdown();
+
+    DeleteTask(task);
+
+    CloseDevice((struct IORequest *)&tr);
+
+    BPTR seg_list = saved_seg_list;
+    Remove(&dev->lib_Node);
+    FreeMem((char *)dev - dev->lib_NegSize, dev->lib_NegSize + dev->lib_PosSize);
+    return seg_list;
+}
+
+static void open(__reg("a6") struct Library *dev, __reg("a1") struct IORequest *ior, __reg("d0") ULONG unitnum, __reg("d1") ULONG flags)
+{
+    ior->io_Error = IOERR_OPENFAIL;
+    ior->io_Message.mn_Node.ln_Type = NT_REPLYMSG;
+
+    if (unitnum != 0)
+        return;
+
+    dev->lib_OpenCnt++;
+    ior->io_Error = 0;
+}
+
+static BPTR close(__reg("a6") struct Library *dev, __reg("a1") struct IORequest *ior)
+{
+    ior->io_Device = NULL;
+    ior->io_Unit = NULL;
+
+    dev->lib_OpenCnt--;
+
+    if (dev->lib_OpenCnt == 0 && (dev->lib_Flags & LIBF_DELEXP))
+        return expunge(dev);
+
+    return 0;
 }
 
 static ULONG device_vectors[] =
 {
-	(ULONG)open,
-	(ULONG)close,
-	(ULONG)expunge,
-	0,
-	(ULONG)begin_io,
-	(ULONG)abort_io,
-	-1,
+    (ULONG)open,
+    (ULONG)close,
+    (ULONG)expunge,
+    0,
+    (ULONG)begin_io,
+    (ULONG)abort_io,
+    -1,
 };
 
 ULONG auto_init_tables[] =
 {
-	sizeof(struct Library),
-	(ULONG)device_vectors,
-	0,
-	(ULONG)init_device,
+    sizeof(struct Library),
+    (ULONG)device_vectors,
+    0,
+    (ULONG)init_device,
 };

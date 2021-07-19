@@ -1,4 +1,5 @@
 ; Written in the end of April 2020 by Niklas Ekström.
+; Updated in July 2021 by Niklas Ekström to handle Card Present signal.
 
         XDEF        _spi_read_fast
         XDEF        _spi_write_fast
@@ -16,12 +17,9 @@ CIAPRB	        equ	$0100
 CIADDRA	        equ	$0200
 CIADDRB	        equ	$0300
 
-Disable         equ     -120
-Enable          equ     -126
-
-CS_BIT          equ     CIAB_PRTRSEL
-CLOCK_BIT       equ     CIAB_PRTRPOUT
-IDLE_BIT        equ     CIAB_PRTRBUSY
+REQ_BIT         equ     CIAB_PRTRSEL
+CLK_BIT         equ     CIAB_PRTRPOUT
+ACT_BIT         equ     CIAB_PRTRBUSY
 
                 ; a0 = unsigned char *buf
                 ; d0 = unsigned int size
@@ -32,45 +30,45 @@ _spi_write_fast:
                 bne.b   .not_zero
                 rts
 .not_zero:
-                movem.l d2/a5-a6,-(a7)
-                move.l  4.w,a6
-                jsr     Disable(a6)
+                movem.l d2/a5,-(a7)
 
                 lea.l   CIAA_BASE+CIAPRB,a1     ; Data
                 lea.l   CIAB_BASE+CIAPRA,a5     ; Control pins
 
-.idle_wait:     move.b  (a5),d2
-                btst    #IDLE_BIT,d2
-                beq.b   .is_idle
-
-                bchg    #CLOCK_BIT,d2
-                move.b  d2,(a5)
-                bra.b   .idle_wait
-
-.is_idle:       move.b  #$ff,$200(a1)           ; Start driving data pins
+                move.b  (a5),d2
 
                 subq    #1,d0                   ; d0 = size - 1
 
                 cmp     #63,d0
                 ble.b   .one_byte_cmd
 
-                ; WRITE2 = 100xxxxx xxxxxxxx
+                ; WRITE2 = 10xxxxxx 0xxxxxxx
                 move    d0,d1
-                lsr     #8,d1
+                lsr     #7,d1
                 or.b    #$80,d1
                 move.b  d1,(a1)
-                bchg    #CLOCK_BIT,d2
+                bclr    #REQ_BIT,d2
                 move.b  d2,(a5)
 
-                move.b  d0,(a1)
-                bchg    #CLOCK_BIT,d2
+.act_wait2:     move.b  (a5),d2
+                btst    #ACT_BIT,d2
+                bne.b   .act_wait2
+
+                move.b  d0,d1
+                and.b   #$7f,d1
+                move.b  d1,(a1)
+                bchg    #CLK_BIT,d2
                 move.b  d2,(a5)
                 bra.b   .cmd_sent
 
 .one_byte_cmd:  ; WRITE1 = 00xxxxxx
                 move.b  d0,(a1)
-                bchg    #CLOCK_BIT,d2
+                bclr    #REQ_BIT,d2
                 move.b  d2,(a5)
+
+.act_wait1:     move.b  (a5),d2
+                btst    #ACT_BIT,d2
+                bne.b   .act_wait1
 
 .cmd_sent:      addq    #1,d0                   ; d0 = size
 
@@ -78,7 +76,7 @@ _spi_write_fast:
                 beq.b   .even
 
                 move.b  (a0)+,(a1)
-                bchg    #CLOCK_BIT,d2
+                bchg    #CLK_BIT,d2
                 move.b  d2,(a5)
 
 .even:          lsr     #1,d0
@@ -86,7 +84,7 @@ _spi_write_fast:
                 subq    #1,d0
 
                 move.b  d2,d1
-                bchg    #CLOCK_BIT,d1
+                bchg    #CLK_BIT,d1
 
 .loop:          move.b  (a0)+,(a1)
                 move.b  d1,(a5)
@@ -94,10 +92,10 @@ _spi_write_fast:
                 move.b  d2,(a5)
                 dbra    d0,.loop
 
-.done:          move.b  #0,$200(a1)             ; Stop driving data pins
+.done:          bset    #REQ_BIT,d2
+                move.b  d2,(a5)
 
-                jsr     Enable(a6)
-                movem.l (a7)+,d2/a5-a6
+                movem.l (a7)+,d2/a5
                 rts
 
                 ; a0 = unsigned char *buf
@@ -109,38 +107,34 @@ _spi_read_fast:
                 bne.b   .not_zero
                 rts
 .not_zero:
-                movem.l d2/a5-a6,-(a7)
-                move.l  4.w,a6
-                jsr     Disable(a6)
+                movem.l d2/a5,-(a7)
 
                 lea.l   CIAA_BASE+CIAPRB,a1      ; Data
                 lea.l   CIAB_BASE+CIAPRA,a5      ; Control pins
 
-.idle_wait:     move.b  (a5),d2
-                btst    #IDLE_BIT,d2
-                beq.b   .is_idle
-
-                bchg    #CLOCK_BIT,d2
-                move.b  d2,(a5)
-                bra.b   .idle_wait
-
-.is_idle:       move.b  #$ff,$200(a1)           ; Start driving data pins
+                move.b  (a5),d2
 
                 subq    #1,d0                   ; d0 = size - 1
 
                 cmp     #63,d0
                 ble.b   .one_byte_cmd
 
-                ; READ2 = 101xxxxx xxxxxxxx
+                ; READ2 = 10xxxxxx 1xxxxxxx
                 move    d0,d1
-                lsr     #8,d1
-                or.b    #$a0,d1
+                lsr     #7,d1
+                or.b    #$80,d1
                 move.b  d1,(a1)
-                bchg    #CLOCK_BIT,d2
+                bclr    #REQ_BIT,d2
                 move.b  d2,(a5)
 
-                move.b  d0,(a1)
-                bchg    #CLOCK_BIT,d2
+.act_wait2:     move.b  (a5),d2
+                btst    #ACT_BIT,d2
+                bne.b   .act_wait2
+
+                move.b  d0,d1
+                or.b    #$80,d1
+                move.b  d1,(a1)
+                bchg    #CLK_BIT,d2
                 move.b  d2,(a5)
                 bra.b   .cmd_sent
 
@@ -148,8 +142,12 @@ _spi_read_fast:
                 move.b  d0,d1
                 or.b    #$40,d1
                 move.b  d1,(a1)
-                bchg    #CLOCK_BIT,d2
+                bclr    #REQ_BIT,d2
                 move.b  d2,(a5)
+
+.act_wait1:     move.b  (a5),d2
+                btst    #ACT_BIT,d2
+                bne.b   .act_wait1
 
 .cmd_sent:      move.b  #0,$200(a1)             ; Stop driving data pins
 
@@ -158,7 +156,7 @@ _spi_read_fast:
                 btst    #0,d0
                 beq.b   .even
 
-                bchg    #CLOCK_BIT,d2
+                bchg    #CLK_BIT,d2
                 move.b  d2,(a5)
                 move.b  (a1),(a0)+
 
@@ -167,7 +165,7 @@ _spi_read_fast:
                 subq    #1,d0
 
                 move.b  d2,d1
-                bchg    #CLOCK_BIT,d1
+                bchg    #CLK_BIT,d1
 
 .loop:          move.b  d1,(a5)
                 move.b  (a1),(a0)+
@@ -175,9 +173,10 @@ _spi_read_fast:
                 move.b  (a1),(a0)+
                 dbra    d0,.loop
 
-.done:          bchg    #CLOCK_BIT,d2
+.done:          bset    #REQ_BIT,d2
                 move.b  d2,(a5)
 
-                jsr     Enable(a6)
-                movem.l (a7)+,d2/a5-a6
+                move.b  #$ff,$200(a1)             ; Start driving data pins
+
+                movem.l (a7)+,d2/a5
                 rts

@@ -1,5 +1,6 @@
 /*
  * Written in the end of April 2020 by Niklas Ekström.
+ * Updated in July 2021 by Niklas Ekström to handle Card Present signal.
  */
 #ifndef SPI_H_
 #define SPI_H_
@@ -7,7 +8,8 @@
 #define SPI_SPEED_SLOW 0
 #define SPI_SPEED_FAST 1
 
-void spi_initialize();
+int spi_initialize(void (*change_isr)());
+int spi_get_card_present();
 void spi_shutdown();
 void spi_set_speed(long speed);
 void spi_select();
