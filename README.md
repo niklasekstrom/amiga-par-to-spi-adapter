@@ -2,6 +2,22 @@
 
 The goal of this project is to make a cheap and easy to build SPI adapter that connects to the parallel port of an Amiga. Furthermore, the performance of the adapter should be as fast as possible.
 
+## Please note: new hardware incompatible version!
+
+What you are looking at is a new version of this design. It is hardware
+incompatible with the original version. Updating the software without making
+the corresponding hardware changes will not work.
+
+Old versions of this design are available as tags/releases.
+
+### Changes with latest version
+
+Support has been added that allows the SPI device to interrupt the Amiga via the adapter.
+The SD card example driver has been modified to use this interrupt so that the SD card
+can be inserted/ejected as part of normal operations.
+
+A video demonstrating this can be seen here: https://www.youtube.com/watch?v=zJDtiFQgrn0.
+
 ## What parts make up the project?
 
 - An AVR microcontroller, provided by an Arduino Nano board
