@@ -15,8 +15,8 @@
 // 8    D6      D6      PD6
 // 9    D7      D7      PD7
 // 10   ACK     D9      PB1             IRQ     Interrupt request to Amiga
-// 11   BUSY    D8      PB0             ACT     Indicate command running
-// 12   POUT    D4      PD4             CLK     Clock to advance command
+// 11   BUSY    D4      PD4             ACT     Indicate command running
+// 12   POUT    D5      PD5             CLK     Clock to advance command
 // 13   SEL     D2      PD2             REQ     Amiga wants to execute command
 //              D3      PD3     CD      CP      Card Present
 //              D10     PB2     SS
@@ -30,10 +30,10 @@
 #define MOSI_BIT        3 // Output.
 #define SS_BIT_n        2 // Output, active low.
 #define IRQ_BIT_n       1 // Output, active low, open collector.
-#define ACT_BIT_n       0 // Output, active low.
 
 // Pins in port D.
-#define CLK_BIT         4 // Input.
+#define CLK_BIT         5 // Input.
+#define ACT_BIT_n       4 // Output, active low.
 #define CP_BIT_n        3 // Input, active low, internal pull-up enabled.
 #define REQ_BIT_n       2 // Input, active low, internal pull-up enabled.
 
@@ -52,7 +52,7 @@ void start_command()
     {
         byte_count = cval;
 
-        PORTB &= ~(1 << ACT_BIT_n);
+        PORTD &= ~(1 << ACT_BIT_n);
 
         if (dval & 0x40)
             goto do_read;
@@ -63,7 +63,7 @@ void start_command()
     {
         byte_count = cval << 7;
 
-        PORTB &= ~(1 << ACT_BIT_n);
+        PORTD &= ~(1 << ACT_BIT_n);
 
         if (dval & (1 << CLK_BIT))
         {
@@ -95,12 +95,12 @@ void start_command()
             else // Deselect
                 PORTB |= (1 << SS_BIT_n);
 
-            PORTB &= ~(1 << ACT_BIT_n);
+            PORTD &= ~(1 << ACT_BIT_n);
         }
         else if (cmd == 1) // CARD_PRESENT
         {
             DDRB &= ~(1 << IRQ_BIT_n);
-            PORTB &= ~(1 << ACT_BIT_n);
+            PORTD &= ~(1 << ACT_BIT_n);
 
             if (dval & (1 << CLK_BIT))
             {
@@ -113,7 +113,7 @@ void start_command()
                     ;
             }
 
-            DDRD = 0xc0;
+            DDRD = 0xc0 | (1 << ACT_BIT_n);
             DDRC = 0x3f;
 
             if (!(PIND & (1 << CP_BIT_n)))
@@ -128,7 +128,7 @@ void start_command()
             else // Slow
                 SPCR = (1 << SPE) | (1 << MSTR) | (1 << SPR1) | (1 << SPR0);
 
-            PORTB &= ~(1 << ACT_BIT_n);
+            PORTD &= ~(1 << ACT_BIT_n);
         }
 
         while (1)
@@ -139,7 +139,7 @@ do_read:
     SPDR = 0xff;
 
     PORTD = (dval & 0xc0) | (1 << CP_BIT_n) | (1 << REQ_BIT_n);
-    DDRD = 0xc0;
+    DDRD = 0xc0 | (1 << ACT_BIT_n);
 
     PORTC = cval;
     DDRC = 0x3f;
@@ -221,10 +221,8 @@ ISR(INT0_vect, ISR_NAKED)
 
     if (PIND & (1 << REQ_BIT_n))
     {
-        PORTB |= (1 << ACT_BIT_n);
-
-        DDRD = 0;
-        PORTD = (1 << CP_BIT_n) | (1 << REQ_BIT_n);
+        DDRD = (1 << ACT_BIT_n);
+        PORTD = (1 << ACT_BIT_n) | (1 << CP_BIT_n) | (1 << REQ_BIT_n);
 
         DDRC = 0;
         PORTC = 0;
@@ -259,15 +257,15 @@ ISR(INT1_vect, ISR_NAKED)
 
 void main()
 {
-    DDRB = (1 << SCK_BIT) | (1 << MOSI_BIT) | (1 << SS_BIT_n) | (1 << ACT_BIT_n);
-    PORTB = (1 << SS_BIT_n) | (1 << ACT_BIT_n);
+    DDRB = (1 << SCK_BIT) | (1 << MOSI_BIT) | (1 << SS_BIT_n);
+    PORTB = (1 << SS_BIT_n);
 
     // SPI enabled, master, fosc/64 = 250 kHz
     SPCR = (1 << SPE) | (1 << MSTR) | (1 << SPR1) | (1 << SPR0);
     SPSR |= (1 << SPI2X);
 
-    DDRD = 0;
-    PORTD = (1 << CP_BIT_n) | (1 << REQ_BIT_n);
+    DDRD = (1 << ACT_BIT_n);
+    PORTD =  (1 << ACT_BIT_n) | (1 << CP_BIT_n) | (1 << REQ_BIT_n);
 
     DDRC = 0;
     PORTC = 0;

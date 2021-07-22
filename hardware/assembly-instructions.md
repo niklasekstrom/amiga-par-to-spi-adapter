@@ -15,8 +15,8 @@ Connect the parallel port to the Nano as follows:
 |  8 |   D6 |  D6 | PD6 |
 |  9 |   D7 |  D7 | PD7 |
 | 10 |  ACK |  D9 | PB1 |
-| 11 | BUSY |  D8 | PB0 |
-| 12 | POUT |  D4 | PD4 |
+| 11 | BUSY |  D4 | PD4 |
+| 12 | POUT |  D5 | PD5 |
 | 13 |  SEL |  D2 | PD2 |
 | 18..25 |  GND | GND | GND |
 
