@@ -23,6 +23,7 @@
 //              D11     PB3     MOSI
 //              D12     PB4     MISO
 //              D13     PB5     SCK
+//              D8      PB0             LED     Activity LED indicator, active low
 
 // Pins in port B.
 #define SCK_BIT         5 // Output.
@@ -30,6 +31,7 @@
 #define MOSI_BIT        3 // Output.
 #define SS_BIT_n        2 // Output, active low.
 #define IRQ_BIT_n       1 // Output, active low, open collector.
+#define LED_BIT_n       0 // Output, active low.
 
 // Pins in port D.
 #define CLK_BIT         5 // Input.
@@ -91,9 +93,9 @@ void start_command()
         if (cmd == 0) // SPI_SELECT
         {
             if (cval & 1) // Select
-                PORTB &= ~(1 << SS_BIT_n);
+                PORTB &= ~((1 << SS_BIT_n) | (1 << LED_BIT_n));
             else // Deselect
-                PORTB |= (1 << SS_BIT_n);
+                PORTB |= (1 << SS_BIT_n) | (1 << LED_BIT_n);
 
             PORTD &= ~(1 << ACT_BIT_n);
         }
@@ -257,8 +259,8 @@ ISR(INT1_vect, ISR_NAKED)
 
 void main()
 {
-    DDRB = (1 << SCK_BIT) | (1 << MOSI_BIT) | (1 << SS_BIT_n);
-    PORTB = (1 << SS_BIT_n);
+    DDRB = (1 << SCK_BIT) | (1 << MOSI_BIT) | (1 << SS_BIT_n) | (1 << LED_BIT_n);
+    PORTB = (1 << SS_BIT_n) | (1 << LED_BIT_n);
 
     // SPI enabled, master, fosc/64 = 250 kHz
     SPCR = (1 << SPE) | (1 << MSTR) | (1 << SPR1) | (1 << SPR0);
