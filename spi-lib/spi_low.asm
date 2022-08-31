@@ -92,7 +92,8 @@ _spi_write_fast:
                 move.b  d2,(a5)
                 dbra    d0,.loop
 
-.done:          bset    #REQ_BIT,d2
+.done:          move.b	d2,(a5)                 ; Delay to allow write to complete
+                bset    #REQ_BIT,d2
                 move.b  d2,(a5)
 
                 movem.l (a7)+,d2/a5
