@@ -18,6 +18,7 @@
 #include <devices/timer.h>
 #include <devices/trackdisk.h>
 #include <proto/exec.h>
+#include <proto/alib.h>
 
 #include "sd.h"
 #include "spi.h"
@@ -68,7 +69,7 @@ static struct Interrupt *remove_int;
 static struct IOStdReq *change_int;
 
 char device_name[] = "spisd.device";
-char id_string[] = "spisd 2.0 (19 July 2021)";
+char id_string[] = "spisd.device 2.0 (19-Jul-2021)";
 
 static uint32_t device_get_geometry(struct IOStdReq *ior)
 {
