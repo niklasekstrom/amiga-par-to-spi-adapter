@@ -36,25 +36,6 @@
 #define SIGF_OP_REQUEST (1 << SIGB_OP_REQUEST)
 #define SIGF_OP_TIMER (1 << SIGB_TIMER)
 
-#ifndef TD_GETGEOMETRY
-// Needed to compile with AmigaOS 1.3 headers.
-#define TD_GETGEOMETRY	(CMD_NONSTD+13)
-
-struct DriveGeometry
-{
-    ULONG	dg_SectorSize;
-    ULONG	dg_TotalSectors;
-    ULONG	dg_Cylinders;
-    ULONG	dg_CylSectors;
-    ULONG	dg_Heads;
-    ULONG	dg_TrackSectors;
-    ULONG	dg_BufMemType;
-    UBYTE	dg_DeviceType;
-    UBYTE	dg_Flags;
-    UWORD	dg_Reserved;
-};
-#endif
-
 struct ExecBase *SysBase;
 static BPTR saved_seg_list;
 static struct timerequest tr;
@@ -86,8 +67,8 @@ static uint32_t device_get_geometry(struct IOStdReq *ior)
     geom->dg_Heads = 1;
     geom->dg_TrackSectors = 1;
     geom->dg_BufMemType = MEMF_PUBLIC;
-    geom->dg_DeviceType = 0; //DG_DIRECT_ACCESS;
-    geom->dg_Flags = 1; //DGF_REMOVABLE;
+    geom->dg_DeviceType = DG_DIRECT_ACCESS;
+    geom->dg_Flags = DGF_REMOVABLE;
     return 0;
 }
 
@@ -212,7 +193,7 @@ static void begin_io(__reg("a6") struct Library *dev, __reg("a1") struct IOStdRe
         break;
 
     case TD_GETDRIVETYPE:
-        ior->io_Actual = 0; //DG_DIRECT_ACCESS;
+        ior->io_Actual = DG_DIRECT_ACCESS;
         break;
 
     case TD_REMOVE:
