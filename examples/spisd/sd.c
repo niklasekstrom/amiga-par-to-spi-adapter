@@ -85,8 +85,7 @@ static int sd_parse_csd(sd_card_info_t *ci, const uint32_t *bits)
 	csd->dsr_implemented = (bits[1] >> 12) & 0x1;
 
 	if (ci->type == sdCardType_SD1_x || ci->type == sdCardType_SD2_0) {
-		csd->device_size = (bits[1] << 2) & 0xffc;
-		csd->device_size |= (bits[2] >> 30) & 0x3;
+		csd->device_size = ((bits[1] & 0x3ff) << 2) | (bits[2] >> 30);
 
 		csd->max_read_current_vdd_min = (bits[2] >> 27) & 0x7;
 		csd->max_read_current_vdd_max = (bits[2] >> 24) & 0x7;
@@ -97,8 +96,7 @@ static int sd_parse_csd(sd_card_info_t *ci, const uint32_t *bits)
 		//ci->capacity = (uint64_t)(csd->device_size + 1) << (csd->device_size_mult + csd->read_block_len + 2);
 		ci->total_sectors = (uint32_t)(csd->device_size + 1) << (csd->device_size_mult + 2);
 	} else if (ci->type == sdCardType_SDHC) {
-		csd->device_size = (bits[1] << 16) & 0x3f;
-		csd->device_size |= (bits[2] >> 16) & 0xffff;
+		csd->device_size = ((bits[1] & 0x3f) << 16) | (bits[2] >> 16);
 
 		//ci->capacity = (uint64_t)(csd->device_size + 1) << 19;
 		ci->total_sectors = (uint32_t)(csd->device_size + 1) << (19 - csd->read_block_len);
