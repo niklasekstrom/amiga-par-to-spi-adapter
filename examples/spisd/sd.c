@@ -468,7 +468,7 @@ int sd_read(uint8_t *buf, uint32_t sector, uint32_t count)
 		} else {
 			err = sdError_BadResponse;
 		}
-	} else {
+	} else if (count > 1) {
 		/* Read multiple sectors */
 		if (sd_send_cmd(CMD18, sector) == 0) {
 			do {
@@ -514,7 +514,7 @@ int sd_write(const uint8_t *buf, uint32_t sector, uint32_t count)
 		} else {
 			err = sdError_BadResponse;
 		}
-	} else {
+	} else if (count > 1) {
 		if (ci->type == sdCardType_SD1_x || ci->type == sdCardType_SD2_0 || ci->type == sdCardType_SDHC) {
 			/* Pre-defined sector count */
 			sd_send_cmd(ACMD23, count);
