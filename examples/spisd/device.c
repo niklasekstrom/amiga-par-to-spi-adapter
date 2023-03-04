@@ -66,11 +66,11 @@ static uint32_t device_get_geometry(struct IOStdReq *ior)
         return TDERR_DiskChanged;
 
     geom->dg_SectorSize = 1 << ci->block_size;
-    geom->dg_TotalSectors = ci->total_sectors; //ci->capacity >> ci->block_size;
-    geom->dg_Cylinders = geom->dg_TotalSectors;
-    geom->dg_CylSectors = 1;
-    geom->dg_Heads = 1;
-    geom->dg_TrackSectors = 1;
+    geom->dg_TotalSectors = ci->total_sectors;
+    geom->dg_Cylinders = geom->dg_TotalSectors / 4096;
+    geom->dg_CylSectors = 4096;
+    geom->dg_Heads = 16;
+    geom->dg_TrackSectors = geom->dg_Cylinders / 16;
     geom->dg_BufMemType = MEMF_PUBLIC;
     geom->dg_DeviceType = DG_DIRECT_ACCESS;
     geom->dg_Flags = DGF_REMOVABLE;
