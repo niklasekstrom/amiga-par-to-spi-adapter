@@ -55,7 +55,7 @@ static struct Interrupt *remove_int;
 static struct IOStdReq *change_int;
 
 char device_name[] = "spisd.device";
-char id_string[] = "spisd.device 2.0 (19-Jul-2021)";
+char id_string[] = "spisd.device 2.2 (5.3.2023) by Niklas Ekström";
 
 static uint32_t device_get_geometry(struct IOStdReq *ior)
 {
