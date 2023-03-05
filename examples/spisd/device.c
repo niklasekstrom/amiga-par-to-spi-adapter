@@ -21,6 +21,7 @@
 #include <proto/exec.h>
 #include <proto/alib.h>
 
+#include "version.h"
 #include "sd.h"
 #include "spi.h"
 
@@ -53,9 +54,6 @@ static volatile ULONG card_change_num;
 
 static struct Interrupt *remove_int;
 static struct IOStdReq *change_int;
-
-char device_name[] = "spisd.device";
-char id_string[] = "spisd.device 2.2 (5.3.2023) by Niklas Ekström";
 
 static uint32_t device_get_geometry(struct IOStdReq *ior)
 {
@@ -312,8 +310,8 @@ static struct Library *init_device(__reg("a6") struct ExecBase *sys_base, __reg(
     dev->lib_Node.ln_Type = NT_DEVICE;
     dev->lib_Node.ln_Name = device_name;
     dev->lib_Flags = LIBF_SUMUSED | LIBF_CHANGED;
-    dev->lib_Version = 2;
-    dev->lib_Revision = 0;
+    dev->lib_Version = VERSION;
+    dev->lib_Revision = REVISION;
     dev->lib_IdString = (APTR)id_string;
 
     Forbid();
