@@ -239,8 +239,16 @@ static int sd_write_block(const uint8_t *buf, uint8_t token)
 
 	/* Send token */
 	spi_write(&token, 1);
-	if (token != 0xfd) {
-		/* Send data, except for STOP_TRAN */
+	if (token == 0xfd) {
+		/* After sending STOP_TRAN, a byte needs to be read before the card
+		 * goes busy. This byte is undefined, so unless we read it now, the
+		 * next sd_wait_ready() will read it and could erronously decide
+		 * that the card is immediately ready.
+		 */
+		spi_read(&resp, 1);
+	}
+	else {
+		/* Send data */
 		spi_write(buf, SD_SECTOR_SIZE);
 		spi_write(crc, 2); /* dummy */
 
