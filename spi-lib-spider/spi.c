@@ -12,6 +12,7 @@
 #include <proto/exec.h>
 
 #include "spi.h"
+#include "config_file.h"
 
 #define REG_RESERVED_0          0
 #define REG_RESERVED_1          1
@@ -39,7 +40,13 @@
 
 static const UBYTE ident_str[] = {0xff, 's', 'p', 'd', 'r'};
 
-#define HARDCODED_CLOCKPORT_ADDRESS     0xEE4001
+#define DEFAULT_CLOCKPORT_ADDRESS   0xD80001
+#define DEFAULT_INTERRUPT_NUMBER    6
+
+static struct ClockportConfig clockport_config = {
+    .clockport_address = DEFAULT_CLOCKPORT_ADDRESS,
+    .interrupt_number = DEFAULT_INTERRUPT_NUMBER,
+};
 
 static volatile BYTE *clockport_address;
 
@@ -253,9 +260,9 @@ static int probe_interface()
 
 int spi_initialize(void (*change_isr)())
 {
-    // TODO: This address should not be hardcoded,
-    // and should be read from devicetree.library.
-    clockport_address = (volatile UBYTE *)HARDCODED_CLOCKPORT_ADDRESS;
+    read_and_parse_config_file(&clockport_config);
+
+    clockport_address = (volatile UBYTE *)clockport_config.clockport_address;
 
     if (probe_interface() < 0)
         return -1;
@@ -274,7 +281,8 @@ int spi_initialize(void (*change_isr)())
     ports_interrupt.is_Data = (APTR)&interrupt_data;
     ports_interrupt.is_Code = InterruptServer;
 
-    AddIntServer(INTB_EXTER, &ports_interrupt);
+    LONG int_num = clockport_config.interrupt_number == 2 ? INTB_PORTS : (clockport_config.interrupt_number == 3 ? INTB_VERTB : INTB_EXTER);
+    AddIntServer(int_num, &ports_interrupt);
 
     return spi_get_card_present();
 }
@@ -284,5 +292,6 @@ void spi_shutdown()
     CP_WR(REG_INT_ARMED, 0);
     CP_WR(REG_INT_FIRED, 0);
 
-    RemIntServer(INTB_EXTER, &ports_interrupt);
+    LONG int_num = clockport_config.interrupt_number == 2 ? INTB_PORTS : (clockport_config.interrupt_number == 3 ? INTB_VERTB : INTB_EXTER);
+    RemIntServer(int_num, &ports_interrupt);
 }
