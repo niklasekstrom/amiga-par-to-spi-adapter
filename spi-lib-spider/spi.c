@@ -14,7 +14,7 @@
 #include "spi.h"
 #include "config_file.h"
 
-#define REG_RESERVED_0          0
+#define REG_STATUS              0   // RO
 #define REG_RESERVED_1          1
 #define REG_UPPER_LENGTH        2   // WO, Upper byte for lengths
 #define REG_CARD_DETECT         3   // RO, Read CD
@@ -30,6 +30,8 @@
 #define REG_INT_ARMED           13  // WO
 #define REG_FIFO                14  // RW, Write to TX, Read from RX
 #define REG_IDENT               15  // RO
+
+#define STATUS_RX_DISCARD_EMPTY 0x01
 
 #define IRQ_CD_CHANGED          1
 
@@ -209,6 +211,11 @@ void spi_write(__reg("a0") const UBYTE *buf, __reg("d0") WORD size)
             }
         }
         while (size);
+    }
+
+    while ((CP_RD(REG_STATUS) & STATUS_RX_DISCARD_EMPTY) == 0)
+    {
+        // Wait until rx_discard is empty.
     }
 }
 
